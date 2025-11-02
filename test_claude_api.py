@@ -8,7 +8,7 @@ def test_claude_api():
     """Test if the Claude API key is working"""
     
     # API key
-    api_key = "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"
+    api_key = "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"
     
     try:
         # Initialize the Anthropic client
@@ -19,7 +19,7 @@ def test_claude_api():
         
         # Make a simple test request
         message = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
+            model="claude-3-haiku-20240307",
             max_tokens=100,
             messages=[
                 {

@@ -218,7 +218,14 @@ async def serve_integrations():
     """Serve the Integrations page"""
     html_path = Path(__file__).parent / "frontend" / "integrations.html"
     if html_path.exists():
-        return FileResponse(html_path)
+        return FileResponse(
+            html_path,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return HTMLResponse("<h1>Integrations page not found</h1>", status_code=404)
 
 
@@ -254,7 +261,15 @@ async def serve_integrations_js():
     """Serve the Integrations JavaScript file"""
     js_path = Path(__file__).parent / "frontend" / "integrations.js"
     if js_path.exists():
-        return FileResponse(js_path, media_type="application/javascript")
+        return FileResponse(
+            js_path,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return HTMLResponse("// JS file not found", status_code=404)
 
 
@@ -263,7 +278,15 @@ async def serve_integrations_js_alt():
     """Serve the Integrations JavaScript file (alternate route)"""
     js_path = Path(__file__).parent / "frontend" / "integrations.js"
     if js_path.exists():
-        return FileResponse(js_path, media_type="application/javascript")
+        return FileResponse(
+            js_path,
+            media_type="application/javascript",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return HTMLResponse("// JS file not found", status_code=404)
 
 
@@ -1438,8 +1461,8 @@ async def connect_telegram_user(request: TelegramUserConnectRequest):
 
 
 @app.post("/api/integrations/{platform}/disconnect")
-async def disconnect_integration(platform: str):
-    """Disconnect an integration"""
+async def disconnect_integration(platform: str, integration_id: int = None):
+    """Disconnect an integration by platform or by ID"""
     try:
         db_manager = get_db_manager()
         session = db_manager.get_session()
@@ -1447,9 +1470,16 @@ async def disconnect_integration(platform: str):
         try:
             from database.models import Integration
 
-            integration = session.query(Integration).filter(
-                Integration.platform == platform
-            ).first()
+            # If integration_id is provided, disconnect by ID
+            if integration_id:
+                integration = session.query(Integration).filter(
+                    Integration.id == integration_id
+                ).first()
+            else:
+                # Otherwise, disconnect first integration of this platform
+                integration = session.query(Integration).filter(
+                    Integration.platform == platform
+                ).first()
 
             if not integration:
                 raise HTTPException(status_code=404, detail=f"{platform} integration not found")
@@ -1458,11 +1488,12 @@ async def disconnect_integration(platform: str):
             integration.updated_at = datetime.utcnow()
 
             session.commit()
-            logger.info(f"✅ Disconnected {platform} integration")
+            logger.info(f"✅ Disconnected {platform} integration (ID: {integration.id})")
 
             return {
                 'message': f'{platform} disconnected successfully',
-                'platform': platform
+                'platform': platform,
+                'id': integration.id
             }
         finally:
             session.close()
