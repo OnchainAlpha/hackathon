@@ -148,6 +148,9 @@
                 <button class="action-btn" onclick="toggleFilterPanel()">
                     <i class="fas fa-filter mr-2"></i>Filters
                 </button>
+                <button class="action-btn" onclick="showImportModal()">
+                    <i class="fas fa-upload mr-2"></i>Import CSV
+                </button>
                 <button class="action-btn" onclick="exportAllContacts()">
                     <i class="fas fa-download mr-2"></i>Export
                 </button>
@@ -395,6 +398,81 @@
                     </button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Import CSV Modal -->
+    <div id="import-modal" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div class="p-6 border-b border-gray-200">
+                <div class="flex items-center justify-between">
+                    <h2 class="text-xl font-semibold text-gray-900">Import Contacts from CSV</h2>
+                    <button onclick="closeImportModal()" class="text-gray-400 hover:text-gray-600">
+                        <i class="fas fa-times text-xl"></i>
+                    </button>
+                </div>
+            </div>
+
+            <div class="p-6">
+                <div class="mb-6">
+                    <h3 class="text-sm font-medium text-gray-900 mb-2">CSV Format Requirements:</h3>
+                    <ul class="text-sm text-gray-600 space-y-1 list-disc list-inside">
+                        <li><strong>Required:</strong> Name column (can be "Name", "Full Name", "Contact Name", etc.)</li>
+                        <li><strong>Optional:</strong> Email, Title, Company, Phone, LinkedIn, City, State, Country, Tags</li>
+                        <li>Column headers are case-insensitive and flexible (e.g., "Email" = "email" = "Email Address")</li>
+                        <li>Tags should be comma-separated in a single cell</li>
+                        <li>Duplicates (by email or LinkedIn URL) will be skipped automatically</li>
+                    </ul>
+                </div>
+
+                <div class="mb-6">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">
+                        Select CSV File
+                    </label>
+                    <input
+                        type="file"
+                        id="csv-file-input"
+                        accept=".csv"
+                        class="block w-full text-sm text-gray-500
+                            file:mr-4 file:py-2 file:px-4
+                            file:rounded-lg file:border-0
+                            file:text-sm file:font-semibold
+                            file:bg-indigo-50 file:text-indigo-700
+                            hover:file:bg-indigo-100
+                            cursor-pointer"
+                    >
+                </div>
+
+                <div id="import-preview" class="hidden mb-6">
+                    <h3 class="text-sm font-medium text-gray-900 mb-2">Preview:</h3>
+                    <div class="bg-gray-50 rounded-lg p-4 text-sm">
+                        <p id="preview-text" class="text-gray-600"></p>
+                    </div>
+                </div>
+
+                <div id="import-results" class="hidden mb-6">
+                    <div class="bg-green-50 border border-green-200 rounded-lg p-4">
+                        <h3 class="text-sm font-medium text-green-900 mb-2">Import Results:</h3>
+                        <div id="results-text" class="text-sm text-green-700"></div>
+                    </div>
+                </div>
+
+                <div id="import-errors" class="hidden mb-6">
+                    <div class="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <h3 class="text-sm font-medium text-red-900 mb-2">Errors:</h3>
+                        <div id="errors-text" class="text-sm text-red-700"></div>
+                    </div>
+                </div>
+
+                <div class="flex justify-end space-x-3">
+                    <button type="button" onclick="closeImportModal()" class="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50">
+                        Cancel
+                    </button>
+                    <button type="button" onclick="importCSV()" id="import-btn" class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+                        <i class="fas fa-upload mr-2"></i>Import
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 

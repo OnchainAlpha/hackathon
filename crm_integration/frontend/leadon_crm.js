@@ -631,6 +631,90 @@ document.getElementById('create-contact-form')?.addEventListener('submit', async
     }
 });
 
+// ==================== CSV Import ====================
+
+function showImportModal() {
+    document.getElementById('import-modal').classList.remove('hidden');
+    // Reset modal state
+    document.getElementById('csv-file-input').value = '';
+    document.getElementById('import-preview').classList.add('hidden');
+    document.getElementById('import-results').classList.add('hidden');
+    document.getElementById('import-errors').classList.add('hidden');
+}
+
+function closeImportModal() {
+    document.getElementById('import-modal').classList.add('hidden');
+}
+
+async function importCSV() {
+    const fileInput = document.getElementById('csv-file-input');
+    const file = fileInput.files[0];
+
+    if (!file) {
+        alert('Please select a CSV file');
+        return;
+    }
+
+    if (!file.name.endsWith('.csv')) {
+        alert('Please select a valid CSV file');
+        return;
+    }
+
+    const importBtn = document.getElementById('import-btn');
+    const originalText = importBtn.innerHTML;
+    importBtn.disabled = true;
+    importBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Importing...';
+
+    try {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(`${API_BASE}/api/contacts/import-csv`, {
+            method: 'POST',
+            body: formData
+        });
+
+        const result = await response.json();
+
+        if (response.ok && result.success) {
+            // Show success message
+            document.getElementById('import-results').classList.remove('hidden');
+            document.getElementById('results-text').innerHTML = `
+                <p><strong>✅ Import Complete!</strong></p>
+                <p class="mt-2">• ${result.imported} contacts imported</p>
+                <p>• ${result.skipped} duplicates skipped</p>
+                ${result.errors > 0 ? `<p>• ${result.errors} errors encountered</p>` : ''}
+            `;
+
+            // Show errors if any
+            if (result.errors > 0 && result.error_details && result.error_details.length > 0) {
+                document.getElementById('import-errors').classList.remove('hidden');
+                document.getElementById('errors-text').innerHTML = result.error_details.map(err =>
+                    `<p>• ${err}</p>`
+                ).join('');
+            }
+
+            // Reload contacts
+            await loadContacts();
+
+            // Auto-close after 3 seconds if no errors
+            if (result.errors === 0) {
+                setTimeout(() => {
+                    closeImportModal();
+                }, 3000);
+            }
+        } else {
+            alert(`Import failed: ${result.detail || 'Unknown error'}`);
+        }
+    } catch (error) {
+        console.error('Error importing CSV:', error);
+        alert('Failed to import CSV. Please check the file format and try again.');
+    } finally {
+        importBtn.disabled = false;
+        importBtn.innerHTML = originalText;
+    }
+}
+
 // ==================== View Switching ====================
 
 function showView(view) {

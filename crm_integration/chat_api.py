@@ -3,7 +3,7 @@ Chat-based CRM API
 Conversational interface for scraping and populating Twenty CRM
 """
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,6 +17,8 @@ import os
 import asyncio
 import requests
 from dotenv import load_dotenv
+import csv
+import io
 
 # Load environment variables from .env file
 load_dotenv()
@@ -841,6 +843,166 @@ async def update_contact(contact_id: int, contact_data: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         session.close()
+
+
+@app.post("/api/contacts/import-csv")
+async def import_contacts_from_csv(file: UploadFile = File(...)):
+    """
+    Import contacts from CSV file.
+    Automatically maps CSV columns to database fields.
+    """
+    try:
+        # Read CSV file
+        contents = await file.read()
+        csv_text = contents.decode('utf-8')
+        csv_reader = csv.DictReader(io.StringIO(csv_text))
+
+        # Column mapping - maps various header names to our database fields
+        column_mapping = {
+            # Name variations
+            'name': 'name',
+            'full name': 'name',
+            'full_name': 'name',
+            'contact name': 'name',
+            'person name': 'name',
+
+            # Email variations
+            'email': 'email',
+            'email address': 'email',
+            'email_address': 'email',
+            'e-mail': 'email',
+            'mail': 'email',
+
+            # Title variations
+            'title': 'title',
+            'job title': 'title',
+            'job_title': 'title',
+            'position': 'title',
+            'role': 'title',
+
+            # Company variations
+            'company': 'company_name',
+            'company name': 'company_name',
+            'company_name': 'company_name',
+            'organization': 'company_name',
+            'employer': 'company_name',
+
+            # Phone variations
+            'phone': 'phone',
+            'phone number': 'phone',
+            'phone_number': 'phone',
+            'mobile': 'phone',
+            'telephone': 'phone',
+
+            # LinkedIn variations
+            'linkedin': 'linkedin_url',
+            'linkedin url': 'linkedin_url',
+            'linkedin_url': 'linkedin_url',
+            'linkedin profile': 'linkedin_url',
+            'profile url': 'linkedin_url',
+
+            # Location variations
+            'city': 'city',
+            'state': 'state',
+            'country': 'country',
+            'location': 'city',
+
+            # Tags variations
+            'tags': 'tags',
+            'tag': 'tags',
+            'categories': 'tags',
+            'labels': 'tags',
+        }
+
+        db_manager = get_db_manager()
+        session = db_manager.get_session()
+
+        imported_count = 0
+        skipped_count = 0
+        error_count = 0
+        errors = []
+
+        try:
+            from database.models import Contact as DBContact
+
+            for row_num, row in enumerate(csv_reader, start=2):  # Start at 2 (header is row 1)
+                try:
+                    # Map CSV columns to database fields
+                    contact_data = {}
+
+                    for csv_col, csv_value in row.items():
+                        if not csv_value or not csv_value.strip():
+                            continue
+
+                        # Normalize column name (lowercase, strip spaces)
+                        normalized_col = csv_col.lower().strip()
+
+                        # Find matching database field
+                        if normalized_col in column_mapping:
+                            db_field = column_mapping[normalized_col]
+                            contact_data[db_field] = csv_value.strip()
+
+                    # Validate required fields
+                    if 'name' not in contact_data:
+                        errors.append(f"Row {row_num}: Missing required field 'name'")
+                        error_count += 1
+                        continue
+
+                    # Handle tags - convert comma-separated string to JSON
+                    if 'tags' in contact_data:
+                        tags_str = contact_data['tags']
+                        tags_list = [t.strip() for t in tags_str.split(',') if t.strip()]
+                        contact_data['tags'] = json.dumps(tags_list)
+
+                    # Set source
+                    contact_data['source'] = 'csv_import'
+
+                    # Check for duplicates (by email or linkedin_url)
+                    existing = None
+                    if 'email' in contact_data and contact_data['email']:
+                        existing = session.query(DBContact).filter(
+                            DBContact.email == contact_data['email']
+                        ).first()
+
+                    if not existing and 'linkedin_url' in contact_data and contact_data['linkedin_url']:
+                        existing = session.query(DBContact).filter(
+                            DBContact.linkedin_url == contact_data['linkedin_url']
+                        ).first()
+
+                    if existing:
+                        skipped_count += 1
+                        continue
+
+                    # Create new contact
+                    new_contact = DBContact(**contact_data)
+                    session.add(new_contact)
+                    imported_count += 1
+
+                except Exception as row_error:
+                    error_count += 1
+                    errors.append(f"Row {row_num}: {str(row_error)}")
+                    logger.error(f"Error importing row {row_num}: {row_error}")
+
+            # Commit all changes
+            session.commit()
+
+            logger.info(f"✅ CSV Import complete: {imported_count} imported, {skipped_count} skipped, {error_count} errors")
+
+            return {
+                'success': True,
+                'imported': imported_count,
+                'skipped': skipped_count,
+                'errors': error_count,
+                'error_details': errors[:10] if errors else [],  # Return first 10 errors
+                'message': f'Successfully imported {imported_count} contacts'
+            }
+
+        finally:
+            session.close()
+
+    except Exception as e:
+        logger.error(f"Error importing CSV: {e}")
+        raise HTTPException(status_code=500, detail=f"Error importing CSV: {str(e)}")
 
 
 @app.delete("/api/contacts")
