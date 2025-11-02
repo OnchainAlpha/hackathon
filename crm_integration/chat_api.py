@@ -16,6 +16,10 @@ import sys
 import os
 import asyncio
 import requests
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -1372,13 +1376,16 @@ async def connect_linkedin(request: LinkedInConnectRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-class TelegramConnectRequest(BaseModel):
-    bot_token: str
+class TelegramUserConnectRequest(BaseModel):
+    """Connect Telegram User API"""
+    api_id: str
+    api_hash: str
+    phone: str
 
 
 @app.post("/api/integrations/telegram/connect")
-async def connect_telegram(request: TelegramConnectRequest):
-    """Connect Telegram bot"""
+async def connect_telegram_user(request: TelegramUserConnectRequest):
+    """Connect Telegram User API for DM campaigns"""
     try:
         db_manager = get_db_manager()
         session = db_manager.get_session()
@@ -1386,65 +1393,47 @@ async def connect_telegram(request: TelegramConnectRequest):
         try:
             from database.models import Integration
 
-            # Validate bot token by making a test API call
-            import requests
-            test_response = requests.get(f"https://api.telegram.org/bot{request.bot_token}/getMe")
-
-            if not test_response.ok:
-                raise HTTPException(status_code=400, detail="Invalid bot token")
-
-            bot_info = test_response.json()
-            if not bot_info.get('ok'):
-                raise HTTPException(status_code=400, detail="Invalid bot token")
-
-            bot_username = bot_info['result']['username']
-            bot_name = bot_info['result']['first_name']
-
-            # Check if Telegram integration already exists
+            # Check if Telegram user integration already exists
             existing = session.query(Integration).filter(
-                Integration.platform == 'telegram'
+                Integration.platform == 'telegram_user'
             ).first()
 
             if existing:
                 # Update existing integration
                 existing.status = 'connected'
-                existing.account_name = bot_name
-                existing.account_id = bot_username
+                existing.phone_number = request.phone
+                existing.refresh_token = request.api_id  # Store API ID in refresh_token
+                existing.access_token = request.api_hash  # Store API Hash in access_token
                 existing.connected_at = datetime.utcnow()
                 existing.updated_at = datetime.utcnow()
-                # Note: In production, encrypt the token!
-                existing.access_token = request.bot_token  # This should be encrypted
 
                 session.commit()
-                logger.info(f"✅ Updated Telegram integration for @{bot_username}")
+                logger.info(f"✅ Updated Telegram User integration for {request.phone}")
             else:
                 # Create new integration
                 integration = Integration(
-                    platform='telegram',
+                    platform='telegram_user',
                     status='connected',
-                    account_name=bot_name,
-                    account_id=bot_username,
-                    access_token=request.bot_token,  # This should be encrypted
+                    phone_number=request.phone,
+                    refresh_token=request.api_id,  # Store API ID
+                    access_token=request.api_hash,  # Store API Hash
                     connected_at=datetime.utcnow(),
                     created_at=datetime.utcnow()
                 )
                 session.add(integration)
                 session.commit()
-                logger.info(f"✅ Created Telegram integration for @{bot_username}")
+                logger.info(f"✅ Created Telegram User integration for {request.phone}")
 
             return {
-                'message': 'Telegram bot connected successfully',
-                'platform': 'telegram',
-                'bot_name': bot_name,
-                'bot_username': bot_username
+                'message': 'Telegram User API connected successfully',
+                'platform': 'telegram_user',
+                'phone': request.phone
             }
         finally:
             session.close()
 
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error connecting Telegram: {e}")
+        logger.error(f"Error connecting Telegram User API: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1482,6 +1471,401 @@ async def disconnect_integration(platform: str):
         raise
     except Exception as e:
         logger.error(f"Error disconnecting integration: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# TELEGRAM CAMPAIGN ENDPOINTS
+# ============================================================================
+
+class PhoneEnrichmentRequest(BaseModel):
+    """Request to enrich contacts with phone numbers from Apollo"""
+    contact_ids: List[int]
+
+
+@app.post("/api/contacts/enrich-phones")
+async def enrich_contact_phones(request: PhoneEnrichmentRequest):
+    """
+    Enrich selected contacts with phone numbers from Apollo API
+
+    Uses Apollo credits to fetch phone numbers for contacts that don't have them.
+    Useful before starting Telegram campaigns.
+    """
+    try:
+        from services.apollo_phone_enrichment import ApolloPhoneEnrichment
+        from database.models import Contact
+
+        db_manager = get_db_manager()
+        session = db_manager.get_session()
+
+        try:
+            # Get contacts
+            contacts = session.query(Contact).filter(
+                Contact.id.in_(request.contact_ids)
+            ).all()
+
+            if not contacts:
+                raise HTTPException(status_code=404, detail="No contacts found")
+
+            # Convert to dicts for enrichment
+            contact_dicts = [
+                {
+                    'id': c.id,
+                    'email': c.email,
+                    'first_name': c.first_name,
+                    'last_name': c.last_name,
+                    'company': c.company,
+                    'phone': c.phone
+                }
+                for c in contacts
+            ]
+
+            # Enrich with Apollo
+            enrichment_service = ApolloPhoneEnrichment()
+            results = enrichment_service.enrich_contacts_batch(contact_dicts)
+
+            # Update contacts in database
+            updated_count = 0
+            for result in results['results']:
+                if result['success'] and result['phone']:
+                    contact = session.query(Contact).filter(
+                        Contact.id == result['contact_id']
+                    ).first()
+
+                    if contact and not contact.phone:
+                        contact.phone = result['phone']
+                        updated_count += 1
+
+            session.commit()
+
+            return {
+                'message': f'Enriched {updated_count} contacts with phone numbers',
+                'total_contacts': results['total'],
+                'enriched': results['enriched'],
+                'failed': results['failed'],
+                'already_had_phone': results['already_had_phone'],
+                'credits_used': results['credits_used'],
+                'updated_in_db': updated_count
+            }
+
+        finally:
+            session.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error enriching phones: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class TelegramCampaignRequest(BaseModel):
+    """Request to start a Telegram DM campaign"""
+    contact_ids: List[int]
+    message_template: str
+    campaign_id: Optional[int] = None
+    enrich_phones: bool = False  # Whether to enrich phones from Apollo first
+
+
+@app.post("/api/telegram/campaign/start")
+async def start_telegram_campaign(request: TelegramCampaignRequest, background_tasks: BackgroundTasks):
+    """
+    Start a Telegram DM campaign
+
+    Sends personalized messages to selected contacts via Telegram.
+    Rate limited to 10 messages per 24 hours, 1 per hour.
+    """
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.get_session()
+
+        try:
+            from database.models import Integration, Contact, TelegramMessage
+
+            # Get Telegram User integration
+            integration = session.query(Integration).filter(
+                Integration.platform == 'telegram_user',
+                Integration.status == 'connected'
+            ).first()
+
+            if not integration:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No Telegram User integration connected. Please connect your Telegram account first."
+                )
+
+            # Get contacts
+            contacts = session.query(Contact).filter(
+                Contact.id.in_(request.contact_ids)
+            ).all()
+
+            if not contacts:
+                raise HTTPException(status_code=404, detail="No contacts found")
+
+            # Enrich phones if requested
+            enrichment_result = None
+            if request.enrich_phones:
+                from services.apollo_phone_enrichment import ApolloPhoneEnrichment
+
+                contact_dicts = [
+                    {
+                        'id': c.id,
+                        'email': c.email,
+                        'first_name': c.first_name,
+                        'last_name': c.last_name,
+                        'company': c.company,
+                        'phone': c.phone
+                    }
+                    for c in contacts
+                ]
+
+                enrichment_service = ApolloPhoneEnrichment()
+                enrichment_result = enrichment_service.enrich_contacts_batch(contact_dicts)
+
+                # Update contacts with new phones
+                for result in enrichment_result['results']:
+                    if result['success'] and result['phone']:
+                        contact = next((c for c in contacts if c.id == result['contact_id']), None)
+                        if contact and not contact.phone:
+                            contact.phone = result['phone']
+
+                session.commit()
+                logger.info(f"📞 Enriched {enrichment_result['enriched']} contacts with phones")
+
+            # Filter contacts with phone numbers
+            contacts_with_phone = [c for c in contacts if c.phone]
+
+            if not contacts_with_phone:
+                error_msg = "None of the selected contacts have phone numbers"
+                if request.enrich_phones:
+                    error_msg += f". Tried Apollo enrichment: {enrichment_result['enriched']} found, {enrichment_result['failed']} failed."
+                raise HTTPException(status_code=400, detail=error_msg)
+
+            # Schedule campaign execution in background
+            background_tasks.add_task(
+                execute_telegram_campaign,
+                integration_id=integration.id,
+                contacts=contacts_with_phone,
+                message_template=request.message_template,
+                campaign_id=request.campaign_id
+            )
+
+            return {
+                'message': 'Telegram campaign started',
+                'total_contacts': len(contacts_with_phone),
+                'status': 'processing'
+            }
+
+        finally:
+            session.close()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting Telegram campaign: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def execute_telegram_campaign(
+    integration_id: int,
+    contacts: List,
+    message_template: str,
+    campaign_id: Optional[int] = None
+):
+    """
+    Execute Telegram campaign in background
+
+    This runs asynchronously and sends messages with rate limiting
+    """
+    from services.telegram_campaign_service import TelegramCampaignService
+    from database.models import Integration, TelegramMessage
+
+    db_manager = get_db_manager()
+    session = db_manager.get_session()
+
+    try:
+        # Get integration details
+        integration = session.query(Integration).filter(
+            Integration.id == integration_id
+        ).first()
+
+        if not integration:
+            logger.error(f"Integration {integration_id} not found")
+            return
+
+        # Initialize Telegram service
+        telegram_service = TelegramCampaignService(
+            api_id=integration.refresh_token,  # API ID stored in refresh_token
+            api_hash=integration.access_token,  # API Hash stored in access_token
+            phone=integration.phone_number
+        )
+
+        # Connect to Telegram
+        connected = await telegram_service.connect()
+        if not connected:
+            logger.error("Failed to connect to Telegram")
+            return
+
+        logger.info(f"🚀 Starting Telegram campaign for {len(contacts)} contacts")
+
+        # Send messages to each contact
+        for contact in contacts:
+            try:
+                # Prepare contact data for template
+                contact_data = {
+                    'phone': contact.phone,
+                    'first_name': contact.first_name or 'there',
+                    'last_name': contact.last_name or '',
+                    'company': contact.company or 'your company',
+                    'title': contact.title or 'your role',
+                    'email': contact.email or ''
+                }
+
+                # Send message
+                result = await telegram_service.send_campaign_message(
+                    contact=contact_data,
+                    template=message_template
+                )
+
+                # Save to database
+                telegram_message = TelegramMessage(
+                    campaign_id=campaign_id,
+                    contact_id=contact.id,
+                    integration_id=integration_id,
+                    phone_number=contact.phone,
+                    telegram_user_id=result.get('telegram_user_id'),
+                    telegram_username=result.get('telegram_username'),
+                    message_text=message_template,
+                    message_id=str(result.get('message_id')) if result.get('message_id') else None,
+                    status='sent' if result['success'] else ('no_telegram' if 'does not have Telegram' in result.get('error', '') else 'failed'),
+                    error_message=result.get('error'),
+                    sent_at=datetime.utcnow() if result['success'] else None
+                )
+                session.add(telegram_message)
+                session.commit()
+
+                # Update integration stats
+                if result['success']:
+                    integration.messages_sent += 1
+                    integration.last_used_at = datetime.utcnow()
+                    session.commit()
+                    logger.info(f"✅ Sent message to {contact.first_name} {contact.last_name}")
+                else:
+                    logger.warning(f"⚠️  Failed to send to {contact.first_name}: {result.get('error')}")
+
+            except Exception as e:
+                logger.error(f"Error sending message to contact {contact.id}: {e}")
+                continue
+
+        # Disconnect
+        await telegram_service.disconnect()
+        logger.info("✅ Telegram campaign completed")
+
+    except Exception as e:
+        logger.error(f"Error executing Telegram campaign: {e}")
+    finally:
+        session.close()
+
+
+@app.get("/api/telegram/campaign/status")
+async def get_telegram_campaign_status():
+    """Get Telegram campaign status and rate limit info"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.get_session()
+
+        try:
+            from database.models import Integration, TelegramMessage
+
+            # Get integration
+            integration = session.query(Integration).filter(
+                Integration.platform == 'telegram_user'
+            ).first()
+
+            if not integration:
+                return {
+                    'connected': False,
+                    'message': 'No Telegram integration found'
+                }
+
+            # Get message stats for today
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            messages_today = session.query(TelegramMessage).filter(
+                TelegramMessage.integration_id == integration.id,
+                TelegramMessage.sent_at >= today_start,
+                TelegramMessage.status == 'sent'
+            ).count()
+
+            # Get total stats
+            total_sent = session.query(TelegramMessage).filter(
+                TelegramMessage.integration_id == integration.id,
+                TelegramMessage.status == 'sent'
+            ).count()
+
+            total_failed = session.query(TelegramMessage).filter(
+                TelegramMessage.integration_id == integration.id,
+                TelegramMessage.status == 'failed'
+            ).count()
+
+            total_no_telegram = session.query(TelegramMessage).filter(
+                TelegramMessage.integration_id == integration.id,
+                TelegramMessage.status == 'no_telegram'
+            ).count()
+
+            return {
+                'connected': integration.status == 'connected',
+                'phone': integration.phone_number,
+                'messages_sent_today': messages_today,
+                'daily_limit': 10,
+                'messages_remaining_today': max(0, 10 - messages_today),
+                'total_sent': total_sent,
+                'total_failed': total_failed,
+                'total_no_telegram': total_no_telegram,
+                'last_used': integration.last_used_at.isoformat() if integration.last_used_at else None
+            }
+
+        finally:
+            session.close()
+
+    except Exception as e:
+        logger.error(f"Error getting campaign status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/telegram/messages")
+async def get_telegram_messages(limit: int = 50):
+    """Get recent Telegram messages"""
+    try:
+        db_manager = get_db_manager()
+        session = db_manager.get_session()
+
+        try:
+            from database.models import TelegramMessage, Contact
+
+            messages = session.query(TelegramMessage).join(Contact).order_by(
+                TelegramMessage.created_at.desc()
+            ).limit(limit).all()
+
+            return {
+                'messages': [
+                    {
+                        'id': msg.id,
+                        'contact_id': msg.contact_id,
+                        'phone_number': msg.phone_number,
+                        'telegram_username': msg.telegram_username,
+                        'status': msg.status,
+                        'error_message': msg.error_message,
+                        'sent_at': msg.sent_at.isoformat() if msg.sent_at else None,
+                        'created_at': msg.created_at.isoformat()
+                    }
+                    for msg in messages
+                ]
+            }
+
+        finally:
+            session.close()
+
+    except Exception as e:
+        logger.error(f"Error getting messages: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

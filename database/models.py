@@ -183,10 +183,11 @@ class Integration(Base):
     account_name = Column(String(255))  # Display name
     account_id = Column(String(255))  # Platform-specific ID
     account_email = Column(String(255))  # Email if applicable
+    phone_number = Column(String(50))  # Phone number for Telegram user API
 
     # Authentication
-    access_token = Column(Text)  # Encrypted access token
-    refresh_token = Column(Text)  # Encrypted refresh token
+    access_token = Column(Text)  # Encrypted access token (or API hash for Telegram)
+    refresh_token = Column(Text)  # Encrypted refresh token (or API ID for Telegram)
     token_expires_at = Column(DateTime)  # Token expiration
 
     # Configuration
@@ -204,6 +205,34 @@ class Integration(Base):
 
     def __repr__(self):
         return f"<Integration(id={self.id}, platform='{self.platform}', status='{self.status}')>"
+
+
+class TelegramMessage(Base):
+    """Telegram message tracking for campaigns"""
+    __tablename__ = 'telegram_messages'
+
+    id = Column(Integer, primary_key=True)
+    campaign_id = Column(Integer, ForeignKey('campaigns.id'), nullable=True)
+    contact_id = Column(Integer, ForeignKey('contacts.id'), nullable=False)
+    integration_id = Column(Integer, ForeignKey('integrations.id'), nullable=False)
+
+    # Message details
+    phone_number = Column(String(50), nullable=False)
+    telegram_user_id = Column(String(100))  # Telegram user ID if found
+    telegram_username = Column(String(100))  # @username if available
+    message_text = Column(Text, nullable=False)
+    message_id = Column(String(100))  # Telegram message ID
+
+    # Status
+    status = Column(String(20), default='pending')  # 'pending', 'sent', 'failed', 'no_telegram'
+    error_message = Column(Text)
+
+    # Timestamps
+    sent_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<TelegramMessage(id={self.id}, contact_id={self.contact_id}, status='{self.status}')>"
 
 
 class Campaign(Base):
